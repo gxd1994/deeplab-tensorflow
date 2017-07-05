@@ -186,6 +186,30 @@ class DeepLabLFOVModel(object):
         raw_output = tf.expand_dims(raw_output, dim=3) # Create 4D-tensor.
         return tf.cast(raw_output, tf.uint8)
 
+    def _calculate_metrics(self,preds,labels):
+
+        confusion_matrix = tf.contrib.metrics.confusion_matrix(labels,preds,num_classes = 2)
+        confusion_matrix = tf.cast(confusion_matrix,tf.float32)
+
+        recall1 = confusion_matrix[0][0]/(confusion_matrix[0][0]+confusion_matrix[0][1])
+        recall2 = confusion_matrix[1][1]/(confusion_matrix[1][0]+confusion_matrix[1][1])
+
+        precision1 = confusion_matrix[0][0]/(confusion_matrix[0][0]+confusion_matrix[1][0])
+        precision2 = confusion_matrix[1][1]/(confusion_matrix[0][1]+confusion_matrix[1][1])
+
+
+        accuracy = (confusion_matrix[0][0]+confusion_matrix[1][1])/(confusion_matrix[1][0]+confusion_matrix[1][1]+confusion_matrix[0][0]+confusion_matrix[0][1])
+
+        return recall1,recall2,precision1,precision2,accuracy
+
+
+    def metrics(self,preds,labels):
+
+        prediction = tf.reshape(preds, [-1])
+        gt = tf.reshape(labels, [-1])
+
+        print "label_batch:",gt
+        return self._calculate_metrics(prediction,gt)
 
         
     
@@ -203,46 +227,48 @@ class DeepLabLFOVModel(object):
 
         
         # Need to resize labels and convert using one-hot encoding.
-        
+
         label_batch = self.prepare_label(label_batch, tf.stack(raw_output.get_shape()[1:3]))
         gt = tf.reshape(label_batch, [-1, n_classes])
         
+
         # Pixel-wise softmax loss.
 
         pred = tf.nn.softmax(prediction)
 
 
-        confusion_matrix = tf.contrib.metrics.confusion_matrix(tf.argmax(gt,axis=1),tf.argmax(pred,axis=1),num_classes = 2)
-        confusion_matrix = tf.cast(confusion_matrix,tf.float32)
+        train_metrics = self._calculate_metrics(tf.argmax(pred,axis=1),tf.argmax(gt,axis = 1))
 
-        recall1 = confusion_matrix[0][0]/(confusion_matrix[0][0]+confusion_matrix[0][1])
-        recall2 = confusion_matrix[1][1]/(confusion_matrix[1][0]+confusion_matrix[1][1])
-        accuracy1 = (confusion_matrix[0][0]+confusion_matrix[1][1])/(confusion_matrix[1][0]+confusion_matrix[1][1]+confusion_matrix[0][0]+confusion_matrix[0][1])
+        tf.summary.scalar('train_r1',train_metrics[0])
+        tf.summary.scalar('train_r2',train_metrics[1])
+        tf.summary.scalar('train_p1',train_metrics[2])
+        tf.summary.scalar('train_p2',train_metrics[3])
+        tf.summary.scalar('train_acc',train_metrics[4])
 
 
+        w_0 = 1.0
+        w_1 = 10.0 
 
-        # w0 = 1.0
-        # w1 = 300.0 
 
-        # w0 = tf.Variable(tf.constant(0,dtype = tf.float32),trainable = True,name = 'weight_w0')
-        # w1 = tf.Variable(tf.constant(300,dtype = tf.float32),trainable = True,name = 'weight_w1')
+        # balanced_weihght = tf.get_variable('blanced_weighte',shape=[2],initializer = tf.constant_initializer(0))
+        # balanced_weihght = tf.nn.softmax(balanced_weihght,name = 'softmax_balanced_weihght')
 
-        # w0 = tf.Print(w0,[w0],message= 'w0',summarize = 6)
-        # w1 = tf.Print(w1,[w1],message= 'w1',summarize = 6)
 
-        balanced_weihght = tf.get_variable('blanced_weighte',shape=[2],initializer = tf.constant_initializer(0))
-        balanced_weihght = tf.nn.softmax(balanced_weihght,name = 'softmax_balanced_weihght')
+        # tf.summary.scalar('balanced_weihght_0',balanced_weihght[0])
+        # tf.summary.scalar('balanced_weihght_1',balanced_weihght[1])
 
-        print balanced_weihght
+        # count_0 = tf.cast(tf.reduce_sum(gt[:,0]),tf.float32)
+        # count_1 = tf.cast(tf.reduce_sum(gt[:,1]),tf.float32)
 
-        tf.summary.scalar('balanced_weihght_0',balanced_weihght[0])
-        tf.summary.scalar('balanced_weihght_1',balanced_weihght[1])
+        # w_0 = balanced_weihght[0]
+        # w_1 = balanced_weihght[1] * count_0 / count_1
 
-        count_0 = tf.cast(tf.reduce_sum(gt[:,0]),tf.float32)
-        count_1 = tf.cast(tf.reduce_sum(gt[:,1]),tf.float32)
 
-        w_0 = balanced_weihght[0]
-        w_1 = balanced_weihght[1] * count_0 / count_1
+        # count_0 = tf.cast(tf.reduce_sum(gt[:,0]),tf.float32)
+        # count_1 = tf.cast(tf.reduce_sum(gt[:,1]),tf.float32)
+
+        # w_0 = 1.0
+        # w_1 = count_0/count_1
 
         tf.summary.scalar('w_0',w_0)
         tf.summary.scalar('w_1',w_1)
@@ -268,7 +294,7 @@ class DeepLabLFOVModel(object):
 
         # recall,op1 = tf.metrics.recall(tf.argmax(gt,axis=1),tf.argmax(pred,axis=1))
 
-        accuracy = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(gt,axis=1),tf.argmax(pred,axis=1)),tf.float32))
+        # accuracy = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(gt,axis=1),tf.argmax(pred,axis=1)),tf.float32))
         
         # precision,op2 = tf.metrics.precision(tf.argmax(gt),tf.argmax(prediction))
 
@@ -279,16 +305,16 @@ class DeepLabLFOVModel(object):
 
 
 
-        # loss = tf.nn.softmax_cross_entropy_with_logits(logits = prediction, labels = gt)
-        # loss_total = tf.reduce_mean(loss)
+        loss_target = tf.nn.softmax_cross_entropy_with_logits(logits = prediction, labels = gt)
+        loss_target = tf.reduce_mean(loss_target)
 
 
-
+        tf.summary.scalar("loss_target",loss_target)
         tf.summary.scalar("loss",loss_total)
 
 
         
-        return loss_total,recall1,recall2,accuracy1,accuracy
+        return loss_target,loss_total,train_metrics
 
 
 

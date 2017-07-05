@@ -43,7 +43,7 @@ SNAPSHOT_DIR = './snapshots/'
 WEIGHTS_PATH   = './util/net_weights.ckpt'
 LOG_DIR = './log'
 
-VAL_LOOP = int(math.ceil(29/BATCH_SIZE))
+VAL_LOOP = int(math.ceil(float(29)/BATCH_SIZE))
 
 IMG_MEAN = np.array((175,175,175), dtype=np.float32)
 
@@ -112,8 +112,6 @@ def main():
     """Create the model and start the training."""
     args = get_arguments()
 
-
-    
     h, w = map(int, args.input_size.split(','))
     input_size = (h, w)
     
@@ -144,18 +142,26 @@ def main():
 
  	image_batch,label_batch = tf.cond(is_training,lambda: (image_batch_train,label_batch_train),lambda: (image_batch_val,label_batch_val))
 
- 	print(image_batch,label_batch)
 
     # Create network.
     net = DeepLabLFOVModel(args.weights_path)
 
     # Define the loss and optimisation parameters.
-    loss,recall1,recall2,accuracy1,accuracy = net.loss(image_batch, label_batch)
+    loss_target,loss,train_metrics = net.loss(image_batch, label_batch)
     optimiser = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
     trainable = tf.trainable_variables()
     optim = optimiser.minimize(loss, var_list=trainable)
     
     pred = net.preds(image_batch)
+
+    val_metrics = net.metrics(pred,label_batch)
+
+    # tf.summary.scalar('val_r1',val_metrics[0])
+    # tf.summary.scalar('val_r2',val_metrics[1])
+    # tf.summary.scalar('val_p1',val_metrics[2])
+    # tf.summary.scalar('val_p2',val_metrics[3])
+    # tf.summary.scalar('val_acc',val_metrics[4])
+
 
 
     merged = tf.summary.merge_all() 
@@ -194,7 +200,7 @@ def main():
         start_time = time.time()
         
         if step % args.save_pred_every == 0:
-            loss_value, images, labels, preds, _ = sess.run([loss,image_batch, label_batch, pred, optim],feed_dict={is_training:True})
+            loss_value,loss_target_value, images, labels, preds, _, train_metrics_value = sess.run([loss,loss_target,image_batch, label_batch, pred, optim,train_metrics],feed_dict={is_training:True})
             fig, axes = plt.subplots(args.save_num_images, 3, figsize = (16, 12))
             for i in xrange(args.save_num_images):
                 axes.flat[i * 3].set_title('data')
@@ -205,13 +211,27 @@ def main():
 
                 axes.flat[i * 3 + 2].set_title('pred')
                 axes.flat[i * 3 + 2].imshow(decode_labels(preds[i, :, :, 0]))
+
             plt.savefig(args.save_dir + str(start_time) + ".png")
             plt.close(fig)
-            save(saver, sess, args.snapshot_dir, step)
 
 
-            for i in range(VAL_LOOP):
-				images, labels, preds = sess.run([image_batch, label_batch, pred],feed_dict={is_training:False})
+
+        else:
+            loss_value,loss_target_value, _ ,summary,train_metrics_value= sess.run([loss,loss_target,optim,merged,train_metrics],feed_dict={is_training:True})
+
+            summary_writer.add_summary(summary,step)
+
+        duration = time.time() - start_time
+
+        print('step {:<6d}, loss = {:.5f}, loss_target = {:.5f} r0 = {:.5f}, r1 = {:.5f}, p0 = {:.5f}, p1 = {:.5f}, acc = {:.5f}, ({:.5f} sec/step)'.format(step,loss_value, loss_target_value,\
+        					           train_metrics_value[0],train_metrics_value[1],train_metrics_value[2],train_metrics_value[3],train_metrics_value[4],duration))
+
+        if step%500 == 0 and step != 0:
+			for i in range(VAL_LOOP):
+				print(VAL_LOOP)
+				start_time = time.time()
+				images, labels, preds,val_metrics_value = sess.run([image_batch, label_batch, pred,val_metrics],feed_dict={is_training:False})
 				for j in range(BATCH_SIZE):
 
 					fig, axes = plt.subplots(1, 3, figsize = (16, 12))
@@ -225,20 +245,16 @@ def main():
 					axes.flat[2].set_title('pred')
 					axes.flat[2].imshow(decode_labels(preds[j, :, :, 0]))
 
-					print('save val results')
-
-					plt.savefig(args.save_dir + str(start_time) +'_'+str(i)+"test.png")
+					plt.savefig(args.save_dir + str(start_time) +'_'+str(i*BATCH_SIZE+j)+"test.png")
 					plt.close(fig)
 
+				duration = time.time() - start_time
 
-        else:
-            loss_value, _ ,summary,recall1_value,recall2_value,acc1,acc= sess.run([loss,optim,merged,recall1,recall2,accuracy1,accuracy],feed_dict={is_training:True})
-            print(recall1_value,recall2_value,acc1,acc)
+        		print('step {:<6d}, val:  r0 = {:.5f}, r1 = {:.5f}, p0 = {:.5f}, p1 = {:.5f}, acc = {:.5f}, ({:.5f} sec/step)'.format(step, \
+        					         val_metrics_value[0],val_metrics_value[1],val_metrics_value[2],val_metrics_value[3],val_metrics_value[4],duration))
 
-            summary_writer.add_summary(summary,step)
 
-        duration = time.time() - start_time
-        print('step {:<6d} \t loss = {:.8f}, ({:.5f} sec/step)'.format(step,loss_value,duration))
+			save(saver, sess, args.snapshot_dir, step)
 
         # print('step {:<6d} \t loss = {:.5f}, precision = {:.5f}, recall = {:.5f}, accuracy = {:.5f}, ({:.5f} sec/step)'.format(step, loss_value,metrics[0],metrics[1],metrics[2],duration))
 
