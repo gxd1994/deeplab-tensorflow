@@ -98,6 +98,63 @@ class DeepLabLFOVModel(object):
         return var
     
     
+    def create_network(self,variables,input_batch, keep_prob):
+        """Construct DeepLab-LargeFOV network.
+        
+        Args:
+          input_batch: batch of pre-processed images.
+          keep_prob: probability of keeping neurons intact.
+          
+        Returns:
+          A downsampled segmentation mask. 
+        """
+        current = input_batch
+        
+        v_idx = 0 # Index variable.
+        
+        # Last block is the classification layer.
+        for b_idx in xrange(len(dilations) - 1):
+            for l_idx, dilation in enumerate(dilations[b_idx]):
+                w = variables[v_idx * 2]
+                b = variables[v_idx * 2 + 1]
+                if dilation == 1:
+                    conv = tf.nn.conv2d(current, w, strides=[1, 1, 1, 1], padding='SAME')
+                else:
+                    conv = tf.nn.atrous_conv2d(current, w, dilation, padding='SAME')
+                current = tf.nn.relu(tf.nn.bias_add(conv, b))
+                v_idx += 1
+            # Optional pooling and dropout after each block.
+            if b_idx < 3:
+                current = tf.nn.max_pool(current, 
+                                         ksize=[1, ks, ks, 1],
+                                         strides=[1, 2, 2, 1],
+                                         padding='SAME')
+            elif b_idx == 3:
+                current = tf.nn.max_pool(current, 
+                             ksize=[1, ks, ks, 1],
+                             strides=[1, 1, 1, 1],
+                             padding='SAME')
+            elif b_idx == 4:
+                current = tf.nn.max_pool(current, 
+                                         ksize=[1, ks, ks, 1],
+                                         strides=[1, 1, 1, 1],
+                                         padding='SAME')
+                current = tf.nn.avg_pool(current, 
+                                         ksize=[1, ks, ks, 1],
+                                         strides=[1, 1, 1, 1],
+                                         padding='SAME')
+            elif b_idx <= 6:
+                current = tf.nn.dropout(current, keep_prob=keep_prob)
+        
+        # Classification layer; no ReLU.
+        w = variables[v_idx * 2]
+        b = variables[v_idx * 2 + 1]
+        conv = tf.nn.conv2d(current, w, strides=[1, 1, 1, 1], padding='SAME')
+        current = tf.nn.bias_add(conv, b)
+
+        return current
+
+
     def _create_network(self, input_batch, keep_prob):
         """Construct DeepLab-LargeFOV network.
         
@@ -208,12 +265,14 @@ class DeepLabLFOVModel(object):
         prediction = tf.reshape(preds, [-1])
         gt = tf.reshape(labels, [-1])
 
-        print "label_batch:",gt
         return self._calculate_metrics(prediction,gt)
 
-        
-    
-    def loss(self, img_batch, label_batch):
+    # def create_network(self,img_batch, label_batch):
+    #     self.variables()
+
+
+    def loss(self, img_batch, label_batch, variables):
+
         """Create the network, run inference on the input batch and compute loss.
         
         Args:
@@ -222,7 +281,80 @@ class DeepLabLFOVModel(object):
         Returns:
           Pixel-wise softmax loss.
         """
-        raw_output = self._create_network(tf.cast(img_batch, tf.float32), keep_prob=tf.constant(0.5))
+
+
+        raw_output = self.create_network(variables,tf.cast(img_batch, tf.float32),keep_prob=tf.constant(0.5))
+
+        # print raw_output
+
+        prediction = tf.reshape(raw_output, [-1, n_classes])
+
+        
+        # Need to resize labels and convert using one-hot encoding.
+
+        label_batch = self.prepare_label(label_batch, tf.stack(raw_output.get_shape()[1:3]))
+        gt = tf.reshape(label_batch, [-1, n_classes])
+        
+
+        # Pixel-wise softmax loss.
+
+        pred = tf.nn.softmax(prediction)
+
+        train_metrics = self._calculate_metrics(tf.argmax(pred,axis=1),tf.argmax(gt,axis = 1))
+
+        tf.summary.scalar('train_r0',train_metrics[0])
+        tf.summary.scalar('train_r1',train_metrics[1])
+        tf.summary.scalar('train_p0',train_metrics[2])
+        tf.summary.scalar('train_p1',train_metrics[3])
+        tf.summary.scalar('train_acc',train_metrics[4])
+
+
+        w_0 = 1.0
+        w_1 = 1.0 
+
+
+        tf.summary.scalar('w_0',w_0)
+        tf.summary.scalar('w_1',w_1)
+
+        w0_col = tf.multiply(w_0,gt[:,0])
+        w1_col = tf.multiply(w_1,gt[:,1])
+
+
+        weight_matrix = tf.stack([w0_col,w1_col],axis = 1)
+
+
+        loss_tmp1 = -tf.multiply(weight_matrix,tf.log(tf.clip_by_value(pred,1e-5,1.0)))
+        loss_tmp2 = tf.reduce_sum(loss_tmp1,axis = 1)
+        loss_total = tf.reduce_mean(loss_tmp2)
+
+
+        # loss_target = tf.nn.softmax_cross_entropy_with_logits(logits = prediction, labels = gt)
+        # loss_target = tf.reduce_mean(loss_target)
+
+
+        # tf.summary.scalar("loss_target",loss_target)
+
+        tf.summary.scalar("loss",loss_total)
+
+        
+        return loss_total,train_metrics,raw_output
+
+        
+    
+    def loss_w(self, img_batch, label_batch,variables, weight):
+        """Create the network, run inference on the input batch and compute loss.
+        
+        Args:
+          input_batch: batch of pre-processed images.
+          
+        Returns:
+          Pixel-wise softmax loss.
+        """
+
+
+        raw_output = self.create_network(variables,tf.cast(img_batch, tf.float32), keep_prob=tf.constant(0.5))
+
+
         prediction = tf.reshape(raw_output, [-1, n_classes])
 
         
@@ -239,15 +371,15 @@ class DeepLabLFOVModel(object):
 
         train_metrics = self._calculate_metrics(tf.argmax(pred,axis=1),tf.argmax(gt,axis = 1))
 
-        tf.summary.scalar('train_r1',train_metrics[0])
-        tf.summary.scalar('train_r2',train_metrics[1])
-        tf.summary.scalar('train_p1',train_metrics[2])
-        tf.summary.scalar('train_p2',train_metrics[3])
+        tf.summary.scalar('train_r0',train_metrics[0])
+        tf.summary.scalar('train_r1',train_metrics[1])
+        tf.summary.scalar('train_p0',train_metrics[2])
+        tf.summary.scalar('train_p1',train_metrics[3])
         tf.summary.scalar('train_acc',train_metrics[4])
 
 
         w_0 = 1.0
-        w_1 = 10.0 
+        w_1 = weight
 
 
         # balanced_weihght = tf.get_variable('blanced_weighte',shape=[2],initializer = tf.constant_initializer(0))
@@ -291,7 +423,6 @@ class DeepLabLFOVModel(object):
 
 
 
-
         # recall,op1 = tf.metrics.recall(tf.argmax(gt,axis=1),tf.argmax(pred,axis=1))
 
         # accuracy = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(gt,axis=1),tf.argmax(pred,axis=1)),tf.float32))
@@ -305,16 +436,17 @@ class DeepLabLFOVModel(object):
 
 
 
-        loss_target = tf.nn.softmax_cross_entropy_with_logits(logits = prediction, labels = gt)
-        loss_target = tf.reduce_mean(loss_target)
+        # loss_target = tf.nn.softmax_cross_entropy_with_logits(logits = prediction, labels = gt)
+        # loss_target = tf.reduce_mean(loss_target)
+
+        # tf.summary.scalar("loss_target",loss_target)
 
 
-        tf.summary.scalar("loss_target",loss_target)
         tf.summary.scalar("loss",loss_total)
 
 
         
-        return loss_target,loss_total,train_metrics
+        return loss_total,train_metrics
 
 
 
