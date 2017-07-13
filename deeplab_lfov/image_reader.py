@@ -3,7 +3,7 @@ import os
 import numpy as np
 import tensorflow as tf
 
-IMG_MEAN = np.array((175,175,175), dtype=np.float32)
+IMG_MEAN = np.array((70,70,70), dtype=np.float32)
 
 def read_labeled_image_list(data_dir, data_list):
     """Reads txt file containing paths to images and ground truth masks.
@@ -84,11 +84,13 @@ class ImageReader(object):
         self.image_list, self.label_list = read_labeled_image_list(self.data_dir, self.data_list)
         self.images = tf.convert_to_tensor(self.image_list, dtype=tf.string)
         self.labels = tf.convert_to_tensor(self.label_list, dtype=tf.string)
+
         self.queue = tf.train.slice_input_producer([self.images, self.labels],
-                                                   shuffle=input_size is not None) # Not shuffling if it is val.
+                                                   shuffle=input_size is not None,
+                                                   capacity = 1000) # Not shuffling if it is val.
         self.image, self.label = read_images_from_disk(self.queue, self.input_size, random_scale) 
 
-    def dequeue(self, num_elements, test_size = None):
+    def dequeue(self, num_elements, is_training = True):
         '''Pack images and labels into a batch.
         
         Args:
@@ -101,6 +103,26 @@ class ImageReader(object):
         #   self.image.set_shape([test_size[0],test_size[1],3])
         #   self.label.set_shape([test_size[0],test_size[1],1])
 
-        image_batch, label_batch = tf.train.batch([self.image, self.label],
-                                                  num_elements)
+        # image_batch, label_batch = tf.train.batch([self.image, self.label],
+        #                                           batch_size = num_elements,capacity = 100)
+
+        if is_training:
+
+            num_preprocess_threads = 16
+            min_queue_examples = 50
+            image_batch, label_batch = tf.train.shuffle_batch(
+                                            [self.image, self.label],
+                                           batch_size=num_elements,
+                                            num_threads=num_preprocess_threads,
+                                           capacity=min_queue_examples + 3 * num_elements,
+                                            min_after_dequeue=min_queue_examples)
+        else:
+
+            image_batch, label_batch = tf.train.batch([self.image, self.label],
+                                                    num_threads = 4,
+                                                    batch_size = num_elements,capacity = 100)
+
+
+
+
         return image_batch, label_batch

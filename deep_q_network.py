@@ -3,7 +3,7 @@ from __future__ import print_function
 
 import tensorflow as tf
 import cv2
-import sys
+import sys,os
 
 # sys.path.append("game/")
 # import wrapped_flappy_bird as game
@@ -17,8 +17,8 @@ from collections import deque
 GAME = 'seg' # the name of the game being played for log files
 ACTIONS = 3 # number of valid actions
 GAMMA = 0.99 # decay rate of past observations
-OBSERVE = 100#100000. # timesteps to observe before training
-EXPLORE = 2000000. # frames over which to anneal epsilon
+OBSERVE = 100 #100000. # timesteps to observe before training
+EXPLORE = 5000 #2000000. # frames over which to anneal epsilon
 FINAL_EPSILON = 0.0001 # final value of epsilon
 INITIAL_EPSILON = 1 #0.0001 # starting value of epsilon
 REPLAY_MEMORY = 50000 # number of previous transitions to remember
@@ -84,8 +84,8 @@ def q_net_prepare(sess,saver,s,readout):
 
     # define the cost function
 
-    a = tf.placeholder("float", [None, ACTIONS])
-    y = tf.placeholder("float", [None])
+    a = tf.placeholder("float", [None, ACTIONS],name = 'action_ph')
+    y = tf.placeholder("float", [None],name = 'y_ph')
 
     readout_action = tf.reduce_sum(tf.multiply(readout, a), reduction_indices=1)
     cost = tf.reduce_mean(tf.square(y - readout_action))
@@ -120,7 +120,7 @@ def q_net_prepare(sess,saver,s,readout):
     # saver = tf.train.Saver()
 
     sess.run(tf.global_variables_initializer())
-    checkpoint = tf.train.get_checkpoint_state("saved_networks1")
+    checkpoint = tf.train.get_checkpoint_state("DQN_saved_model")
 
     if checkpoint and checkpoint.model_checkpoint_path:
         saver.restore(sess, checkpoint.model_checkpoint_path)
@@ -158,6 +158,7 @@ def trainNetwork(sess,saver,s,a,y,readout,train_step,epsilon,t,D,s_0,seg_get_sta
     count = 0
     while count < 1:
         count += 1
+    # while True:
         # choose an action epsilon greedily
         readout_t = readout.eval(session = sess,feed_dict={s : [s_t]})[0]
 
@@ -233,9 +234,17 @@ def trainNetwork(sess,saver,s,a,y,readout,train_step,epsilon,t,D,s_0,seg_get_sta
         s_t = s_t1
         t += 1
 
-        # save progress every 10000 iterations
-        if t % 10000 == 0:
-            saver.save(sess, 'saved_networks1/' + GAME + '-dqn', global_step = t)
+
+
+        # save progress every 10000 iterations  
+
+
+
+        if t % 5000 == 0:
+            if not os.path.exists('./DQN_saved_model/' + GAME + '-dqn'):
+                os.makedirs('./DQN_saved_model/' + GAME + '-dqn')
+
+            saver.save(sess, './DQN_saved_model/' + GAME + '-dqn', global_step = t)
 
         # print info
         state = ""
@@ -256,7 +265,8 @@ def trainNetwork(sess,saver,s,a,y,readout,train_step,epsilon,t,D,s_0,seg_get_sta
             h_file.write(",".join([str(x) for x in h_fc1.eval(feed_dict={s:[s_t]})[0]]) + '\n')
             cv2.imwrite("logs_tetris/frame" + str(t) + ".png", x_t1)
         '''
-
+        # if r_t>0:
+        #     break
 
     return epsilon,t,is_updata_q_net_to_net
 

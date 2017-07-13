@@ -228,7 +228,7 @@ class DeepLabLFOVModel(object):
             input_batch = tf.one_hot(input_batch, depth=2)
         return input_batch
       
-    def preds(self, input_batch):
+    def preds(self, input_batch,variables):
         """Create the network and run inference on the input batch.
         
         Args:
@@ -237,7 +237,7 @@ class DeepLabLFOVModel(object):
         Returns:
           Argmax over the predictions of the network of the same shape as the input.
         """
-        raw_output = self._create_network(tf.cast(input_batch, tf.float32), keep_prob=tf.constant(1.0))
+        raw_output = self.create_network(variables,tf.cast(input_batch, tf.float32), keep_prob=tf.constant(1.0))
         raw_output = tf.image.resize_bilinear(raw_output, tf.shape(input_batch)[1:3,])
         raw_output = tf.argmax(raw_output, dimension=3)
         raw_output = tf.expand_dims(raw_output, dim=3) # Create 4D-tensor.
@@ -265,13 +265,23 @@ class DeepLabLFOVModel(object):
         prediction = tf.reshape(preds, [-1])
         gt = tf.reshape(labels, [-1])
 
-        return self._calculate_metrics(prediction,gt)
+        recall1,recall2,precision1,precision2,accuracy = self._calculate_metrics(prediction,gt)
+
+
+        tf.summary.scalar('val_r0',recall1,collections = ['val'])
+        tf.summary.scalar('val_r1',recall2,collections = ['val'])
+        tf.summary.scalar('val_p0',precision1,collections = ['val'])
+        tf.summary.scalar('val_p1',precision2,collections = ['val'])
+        tf.summary.scalar('val_acc',accuracy,collections = ['val'])
+
+
+        return  recall1,recall2,precision1,precision2,accuracy
 
     # def create_network(self,img_batch, label_batch):
     #     self.variables()
 
 
-    def loss(self, img_batch, label_batch, variables):
+    def loss(self, img_batch, label_batch, variables, is_Qnet = False, is_placehold = False):
 
         """Create the network, run inference on the input batch and compute loss.
         
@@ -302,11 +312,6 @@ class DeepLabLFOVModel(object):
 
         train_metrics = self._calculate_metrics(tf.argmax(pred,axis=1),tf.argmax(gt,axis = 1))
 
-        tf.summary.scalar('train_r0',train_metrics[0])
-        tf.summary.scalar('train_r1',train_metrics[1])
-        tf.summary.scalar('train_p0',train_metrics[2])
-        tf.summary.scalar('train_p1',train_metrics[3])
-        tf.summary.scalar('train_acc',train_metrics[4])
 
 
         w_0 = 1.0
@@ -334,10 +339,25 @@ class DeepLabLFOVModel(object):
 
         # tf.summary.scalar("loss_target",loss_target)
 
-        tf.summary.scalar("loss",loss_total)
+        if is_Qnet:
+            tf.summary.scalar('train_r0',train_metrics[0],collections = ['Q_train'])
+            tf.summary.scalar('train_r1',train_metrics[1],collections = ['Q_train'])
+            tf.summary.scalar('train_p0',train_metrics[2],collections = ['Q_train'])
+            tf.summary.scalar('train_p1',train_metrics[3],collections = ['Q_train'])
+            tf.summary.scalar('train_acc',train_metrics[4],collections = ['Q_train'])
+            tf.summary.scalar("loss",loss_total,collections = ['Q_train'])
+            
+
+        elif not is_placehold:
+            tf.summary.scalar('train_r0',train_metrics[0],collections = ['train'])
+            tf.summary.scalar('train_r1',train_metrics[1],collections = ['train'])
+            tf.summary.scalar('train_p0',train_metrics[2],collections = ['train'])
+            tf.summary.scalar('train_p1',train_metrics[3],collections = ['train'])
+            tf.summary.scalar('train_acc',train_metrics[4],collections = ['train'])
+            tf.summary.scalar("loss",loss_total,collections = ['train'])
 
         
-        return loss_total,train_metrics,raw_output
+        return loss_total,train_metrics,raw_output,label_batch
 
         
     
@@ -371,11 +391,7 @@ class DeepLabLFOVModel(object):
 
         train_metrics = self._calculate_metrics(tf.argmax(pred,axis=1),tf.argmax(gt,axis = 1))
 
-        tf.summary.scalar('train_r0',train_metrics[0])
-        tf.summary.scalar('train_r1',train_metrics[1])
-        tf.summary.scalar('train_p0',train_metrics[2])
-        tf.summary.scalar('train_p1',train_metrics[3])
-        tf.summary.scalar('train_acc',train_metrics[4])
+
 
 
         w_0 = 1.0
@@ -442,11 +458,8 @@ class DeepLabLFOVModel(object):
         # tf.summary.scalar("loss_target",loss_target)
 
 
-        tf.summary.scalar("loss",loss_total)
-
-
         
-        return loss_total,train_metrics
+        return loss_total,train_metrics,raw_output
 
 
 
