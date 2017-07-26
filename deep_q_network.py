@@ -80,7 +80,10 @@ def createNetwork():
     return s, readout, h_fc1
 
 
-def q_net_prepare(sess,saver,s,readout):
+def q_net_prepare(sess_config,s,readout):
+
+    sess = tf.Session(config=sess_config)
+
 
     # define the cost function
 
@@ -116,17 +119,17 @@ def q_net_prepare(sess,saver,s,readout):
 
     # s_t = np.stack((x_t, x_t, x_t, x_t), axis=2)
 
-    # saving and loading networks
-    # saver = tf.train.Saver()
+    #saving and loading networks
+    saver = tf.train.Saver()
 
     sess.run(tf.global_variables_initializer())
     checkpoint = tf.train.get_checkpoint_state("DQN_saved_model")
 
     if checkpoint and checkpoint.model_checkpoint_path:
         saver.restore(sess, checkpoint.model_checkpoint_path)
-        print("Successfully loaded:", checkpoint.model_checkpoint_path)
+        print("RL Successfully loaded:", checkpoint.model_checkpoint_path)
     else:
-        print("Could not find old network weights")
+        print("RL Could not find old network weights")
 
 
     
@@ -135,7 +138,7 @@ def q_net_prepare(sess,saver,s,readout):
     t = 0
 
 
-    return sess,s,a,y,readout,train_step,epsilon,t,D
+    return sess,saver,s,a,y,readout,train_step,epsilon,t,D
 
 
 def playGame():

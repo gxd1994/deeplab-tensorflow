@@ -24,32 +24,45 @@ import math
 
 from deeplab_lfov import DeepLabLFOVModel, ImageReader, decode_labels
 
-import deep_q_network as DQN
+# import deep_q_network as DQN
+
+import DDPG_update as DDPG
+
+from sklearn.metrics import recall_score
+from sklearn.metrics import precision_score
 
 
+NUM_CLASS = 2
 
 BATCH_SIZE = 6
+
+# DATA_DIRECTORY = './dataset/VOC2012/VOC2012' #'/home/VOCdevkit'
 DATA_DIRECTORY = './dataset/class1_def' #'/home/VOCdevkit'
+
+# IMG_MEAN = np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32)
+IMG_MEAN = np.array((70,70,70), dtype=np.float32)
+
 
 DATA_TRAIN_LIST_PATH = DATA_DIRECTORY+'/train.txt'
 DATA_VAL_LIST_PATH = DATA_DIRECTORY+'/test.txt'
+# DATA_VAL_LIST_PATH = DATA_DIRECTORY+'/val.txt'
 
 INPUT_SIZE = '505,505'
 LEARNING_RATE = 0.0001
-# MEAN_IMG = tf.Variable(np.array((70,70,70)), trainable=False, dtype=tf.float32)
-NUM_STEPS = 20000
+NUM_STEPS = 60000
 RANDOM_SCALE = False  #True
-RESTORE_FROM = None #'./snapshots/model.ckpt-1000' # None   #'./deeplab_lfov.ckpt'
+RESTORE_FROM = None #'./snapshots/model.ckpt-5000' # './snapshots/model.ckpt-pretrained'   #'./deeplab_lfov.ckpt'
 SAVE_DIR = './images/'
 SAVE_NUM_IMAGES = 2
-SAVE_PRED_EVERY = 100
+SAVE_PRED_EVERY = 5000
 SNAPSHOT_DIR = './snapshots/'
 WEIGHTS_PATH   = './util/net_weights.ckpt'
 LOG_DIR = './log'
 
+# VAL_LOOP = int(math.ceil(float(1449)/BATCH_SIZE))
 VAL_LOOP = int(math.ceil(float(29)/BATCH_SIZE))
 
-IMG_MEAN = np.array((70,70,70), dtype=np.float32)
+
 
 def get_arguments():
     """Parse all the arguments provided from the CLI.
@@ -143,6 +156,52 @@ def TensorList_Assign(sources,tags):
         ops.append(op)
     return ops
 
+def calculate_state(label,featuremap,step,distribution,distribution_batch,is_batch_state):
+
+
+    if is_batch_state:
+
+        recall = recall_score(y_true = label,y_pred = featuremap,labels = [i for i in range(NUM_CLASS)],average=None)
+        precision = precision_score(y_true = label,y_pred = featuremap,labels = [i for i in range(NUM_CLASS)],average=None)
+
+        state = np.stack((distribution,distribution_batch,recall,precision),axis = 1).flatten()
+
+        print('recall','precision','distribution','distribution_batch',recall,precision,distribution,distribution_batch)
+        
+        #print('state',state.shape,state)
+
+    else:
+
+        batch_total = label.shape[0]
+        for i in range(distribution.shape[0]):
+            distribution_batch[i] = 1.0 * np.sum(label == i)/batch_total
+
+        # print('distribution_batch',distribution_batch)
+
+        distribution = distribution + 1.0/step * (distribution_batch - distribution)
+
+
+        recall = recall_score(y_true = label,y_pred = featuremap,labels = [i for i in range(NUM_CLASS)],average=None)
+        precision = precision_score(y_true = label,y_pred = featuremap,labels = [i for i in range(NUM_CLASS)],average=None)
+
+
+        state = np.stack((distribution,distribution_batch,recall,precision),axis = 1).flatten()
+
+        print('recall','precision','distribution','distribution_batch',recall,precision,distribution,distribution_batch)
+        
+        #print('state',state.shape,state)
+
+    return state,distribution,distribution_batch
+
+
+
+
+# def Action_Assign(num):
+#     action_type = [0.1,1.0,10]
+#     action_list= []
+#     for i in range(num):
+#         for j in range(len(action_type)):
+#             action_list.append()
 
 def main():
     """Create the model and start the training."""
@@ -161,6 +220,7 @@ def main():
             args.data_train_list,
             input_size,
             RANDOM_SCALE,
+            IMG_MEAN,
             coord)
         image_batch_train, label_batch_train = reader_train.dequeue(args.batch_size)
 
@@ -170,6 +230,7 @@ def main():
             args.data_val_list,
             input_size,
             False,
+            IMG_MEAN,
             coord)
         image_batch_val, label_batch_val = reader_val.dequeue(args.batch_size, is_training = False)
 
@@ -178,9 +239,6 @@ def main():
 
     image_batch,label_batch = tf.cond(is_training,lambda: (image_batch_train,label_batch_train),lambda: (image_batch_val,label_batch_val))
 
-    #image_batch,label_batch = image_batch_train,label_batch_train
-
-    # print (image_batch,label_batch)
 
 
     # Q_SegNet input
@@ -191,9 +249,9 @@ def main():
     loss_image_batch = tf.placeholder(tf.float32,[BATCH_SIZE,505,505,3])
     loss_label_batch = tf.placeholder(tf.uint8,[BATCH_SIZE,505,505,1])
 
-    # Q_SegNet action  >>>>> weight
+    # DQN action  >>>>> weight
 
-    Q_action = tf.placeholder(tf.float32,shape=[],name = 'q_action')
+    Q_action = tf.placeholder(tf.float32,shape=[NUM_CLASS],name = 'q_action')
 
 
     # Create network.
@@ -207,10 +265,6 @@ def main():
 
 
 
-    # updata_net_to_q_net = tf.placeholder(tf.bool,shape=[],name = 'net_to_qnet')
-    # updata_q_net_to_net = tf.placeholder(tf.bool,shape=[],name = 'qnet_to_net')
-
-
     updata_q_net_to_net_ops = TensorList_Assign(Q_net.variables,net.variables)
     updata_net_to_q_net_ops = TensorList_Assign(net.variables,Q_net.variables)
 
@@ -219,16 +273,21 @@ def main():
 
 
 
-    # Define the loss and optimisation parameters.
+    # Define Q_SegNet the loss 
 
-    Q_loss_w,Q_train_metrics_w,Q_featuremap_w = Q_net.loss_w(Q_image_batch, Q_label_batch, Q_net.variables, Q_action)
+    Q_loss_w,Q_train_metrics_w,Q_featuremap_w,_ = Q_net.loss_w(Q_image_batch, Q_label_batch, Q_net.variables, Q_action)
 
-    Q_loss,Q_train_metrics,Q_featuremap,_ = Q_net.loss(Q_image_batch, Q_label_batch, Q_net.variables,is_Qnet = True)
+    Q_loss,Q_train_metrics,Q_featuremap,_,_ = Q_net.loss(Q_image_batch, Q_label_batch, Q_net.variables,is_Qnet = True)
 
-    loss,train_metrics,_ ,_= net.loss(image_batch, label_batch, net.variables)
+    
+    # Define SegNet the loss
 
-    newest_loss,_,featuremap,label_equal = net.loss(loss_image_batch,loss_label_batch,net.variables,is_placehold = True)
+    loss,train_metrics,_ ,_,train_updata_op= net.loss(image_batch, label_batch, net.variables)
 
+    newest_loss,_,featuremap_get,label_equal,_ = net.loss(loss_image_batch,loss_label_batch,net.variables,is_placehold = True)
+
+
+    # optimisation
 
     optimiser = tf.train.AdamOptimizer(learning_rate=args.learning_rate)
 
@@ -242,40 +301,36 @@ def main():
         Q_optim = optimiser.minimize(Q_loss_w,var_list = Q_net.variables)   #, var_list=trainable)
 
 
-    
+    # SegNet validation
+
     pred = net.preds(image_batch,net.variables)
 
-    val_metrics = net.metrics(pred,label_batch)
-
-    # tf.summary.scalar('val_r1',val_metrics[0])
-    # tf.summary.scalar('val_r2',val_metrics[1])
-    # tf.summary.scalar('val_p1',val_metrics[2])
-    # tf.summary.scalar('val_p2',val_metrics[3])
-    # tf.summary.scalar('val_acc',val_metrics[4])
+    val_metrics,val_updata_op = net.metrics(pred,label_batch)
 
 
 
     # Set up tf session and initialize variables. 
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
+    # config.gpu_options.per_process_gpu_memory_fraction = 0.8
 
 
     # Saver for storing checkpoints of the model.
-    saver = tf.train.Saver(var_list=trainable, max_to_keep=40)
-
-    ########DQN#####################
-
-    with tf.variable_scope('DQN'):
-        state,readout,h_fc1 = DQN.createNetwork()
-
-    sess_q = tf.Session(config=config)
-
-    sess_q,s,a,y,readout,train_step_q,epsilon,t,D = DQN.q_net_prepare(sess_q,saver,state,readout)
+    #saver = tf.train.Saver(var_list=trainable, max_to_keep=40)
+    saver = tf.train.Saver(var_list = net.variables ,max_to_keep=40)
 
 
-  	###########Seg_Net####################
+    ############DDPG#####################
 
-    # config.gpu_options.per_process_gpu_memory_fraction = 0.8
+    a_dim=NUM_CLASS;s_dim=NUM_CLASS*4;a_bound=10;
+
+    ddpg,var = DDPG.DDPG_Prepare(a_dim,s_dim,a_bound)
+
+
+
+  	###########Seg_Net & Q_Seg_Net ####################
+
+
     sess = tf.Session(config=config)
 
     init = tf.global_variables_initializer()
@@ -283,7 +338,7 @@ def main():
     sess.run(init)
     sess.run(tf.local_variables_initializer())
     
-
+    # summary
 
     merged_train = tf.summary.merge_all('train') 
     merged_val = tf.summary.merge_all('val')
@@ -295,13 +350,17 @@ def main():
     summary_writer = tf.summary.FileWriter(args.log_dir,graph = tf.get_default_graph())
 
 
+    # restore finetune
 
     if args.restore_from is not None:
         load(saver, sess, args.restore_from)
     
+
     # Start queue threads.
+
     threads = tf.train.start_queue_runners(coord=coord, sess=sess)
     
+    # save model
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
 
@@ -310,6 +369,13 @@ def main():
     is_updata_net_to_q_net = True
 
     duration = 0
+
+    distribution = np.zeros(NUM_CLASS)
+    distribution_batch = np.zeros(NUM_CLASS)
+    average_count = 0
+    DDPG_count = 0
+
+
     # Iterate over training steps.
     for step in range(args.num_steps):
         start_time = time.time()
@@ -320,7 +386,7 @@ def main():
             if is_updata_q_net_to_net:
                 sess.run(updata_q_net_to_net_ops)
 
-            loss_value, images, labels, preds, _, train_metrics_value = sess.run([loss,image_batch, label_batch, pred, optim,train_metrics],\
+            loss_value, images, labels, preds, _, train_metrics_value,_ = sess.run([loss,image_batch, label_batch, pred, optim,train_metrics,train_updata_op],\
             														feed_dict={is_training: True})
             fig, axes = plt.subplots(args.save_num_images, 3, figsize = (16, 12))
             for i in xrange(args.save_num_images):
@@ -336,8 +402,8 @@ def main():
             plt.savefig(args.save_dir + str(start_time) + ".png")
             plt.close(fig)
 
-            print('step {:<6d}, loss = {:.5f}, r0 = {:.5f}, r1 = {:.5f}, p0 = {:.5f}, p1 = {:.5f}, acc = {:.5f}, ({:.5f} sec/step)'.format(step,loss_value,\
-                               train_metrics_value[0],train_metrics_value[1],train_metrics_value[2],train_metrics_value[3],train_metrics_value[4],duration))
+            print('step {:<6d}, loss = {:.5f}, miou = {:.5f}, ({:.5f} sec/step)'.format(step,loss_value,\
+                               train_metrics_value,duration))
 
 
 
@@ -355,14 +421,14 @@ def main():
 
 
 
-            summary_train,loss_value, _ ,train_metrics_value,image_batch_fetch,label_batch_fetch= \
-                        sess.run([merged_train,loss,optim,train_metrics,image_batch,label_batch],\
+            summary_train,loss_value, _ ,train_metrics_value,_,image_batch_fetch,label_batch_fetch= \
+                        sess.run([merged_train,loss,optim,train_metrics,train_updata_op,image_batch,label_batch],\
                                 feed_dict={is_training:True})
 
             summary_writer.add_summary(summary_train,step)
 
 
-            newest_loss_value,featuremap_val,label_equal_val = sess.run([newest_loss,featuremap,label_equal],feed_dict={loss_image_batch:image_batch_fetch,loss_label_batch:label_batch_fetch})
+            newest_loss_value,featuremap_val,label_equal_val = sess.run([newest_loss,featuremap_get,label_equal],feed_dict={loss_image_batch:image_batch_fetch,loss_label_batch:label_batch_fetch})
 
             # print (loss_value,newest_loss_value)
 
@@ -373,44 +439,47 @@ def main():
 
             # loss_origin,featuremap,image_batch,label_batch
 
-            print('step {:<6d}, loss = {:.5f}, r0 = {:.5f}, r1 = {:.5f}, p0 = {:.5f}, p1 = {:.5f}, acc = {:.5f}, ({:.5f} sec/step)'.format(step,loss_value,\
-                                       train_metrics_value[0],train_metrics_value[1],train_metrics_value[2],train_metrics_value[3],train_metrics_value[4],duration))
+            print('step {:<6d}, loss = {:.5f}, miou = {:.5f}, ({:.5f} sec/step)'.format(step,newest_loss_value,\
+                                       train_metrics_value,duration))
 
 
-            select = 0
+            # #select = 0
 
-            s_0 = np.stack((np.argmax(label_equal_val[select],axis=2),np.argmax(featuremap_val[select],axis = 2)),axis = 2)
+            # s_0 = np.stack((np.argmax(label_equal_val[select],axis=2),np.argmax(featuremap_val[select],axis = 2)),axis = 2)
 
-            action_set = [1.0,0.1,100]
+            # action_set = [1.0,0.1,100]
+
+
+            label_flatten = np.argmax(label_equal_val,axis =3).flatten()
+            featuremap_flatten = np.argmax(featuremap_val,axis =3).flatten()
+
+            average_count += 1
+            s_0,distribution,distribution_batch = calculate_state(label_flatten,featuremap_flatten,average_count,distribution,distribution_batch,False)
+
+
 
 
             def seg_get_state(a_t):
 
-                #a_t = 0
+                w1 = a_t
+                print("a",a_t)
 
-                w1 = action = action_set[int(a_t)]
-
-                Q_loss_w_val,Q_featuremap_w_val,_ = sess.run([Q_loss_w,Q_featuremap_w,Q_optim,],feed_dict={Q_image_batch:image_batch_fetch,Q_label_batch:label_batch_fetch,Q_action:w1})
+                ##backup update Q_net parameters
+                Q_loss_w_val,Q_featuremap_w_val,_ = sess.run([Q_loss_w,Q_featuremap_w,Q_optim],feed_dict={Q_image_batch:image_batch_fetch,Q_label_batch:label_batch_fetch,Q_action:w1})
                 
-                # Q_loss_val = Q_loss_w_val
-                # Q_featuremap_val = Q_featuremap_w_val
-
-                # is_updata_net_to_q_net = False
-
-                # _ = sess.run(Q_net.variables)
-
+                ##forward get Q_net feature and newestlosss
                 Q_loss_val,Q_featuremap_val = sess.run([Q_loss,Q_featuremap],feed_dict={Q_image_batch:image_batch_fetch,Q_label_batch:label_batch_fetch})
 
 
-                print("orgin_loss:%.5f    q_loss_w:%.5f     q_loss:%.5f "%(loss_value, Q_loss_w_val, Q_loss_val))
-
                 r_t = newest_loss_value - Q_loss_val
 
+                print("orgin_loss:%.5f    q_loss_w:%.5f     q_loss:%.5f  r_t:%5f "%(loss_value, Q_loss_w_val, Q_loss_val,r_t))
 
-                Q_label = np.argmax(label_equal_val[select],axis=2)
-                Q_featuremap_val_argmax = np.argmax(Q_featuremap_val[select],axis = 2)
 
-                s_t1 = np.stack((Q_label,Q_featuremap_val_argmax),axis=2)
+                Q_label_flatten = np.argmax(label_equal_val,axis=3).flatten()
+                Q_featuremap_val_argmax_flatten = np.argmax(Q_featuremap_val,axis=3).flatten()
+
+                s_t1,_,_ = calculate_state(Q_label_flatten,Q_featuremap_val_argmax_flatten,average_count,distribution,distribution_batch,True)
 
                 terminal = False
 
@@ -421,22 +490,19 @@ def main():
 
             sess.run(updata_net_to_q_net_ops)
 
-            epsilon,t,is_updata_q_net_to_net = DQN.trainNetwork(sess_q,saver,s,a,y,readout,train_step_q,epsilon,t,D,s_0,seg_get_state)
-            
+            is_updata_q_net_to_net,DDPG_count,var = DDPG.trainNetwork(ddpg,s_0,seg_get_state,DDPG_count,var)
+
             #is_updata_q_net_to_net =False
 
-            # summary_writer.add_summary(summary,step)
 
 
         duration = time.time() - start_time
 
-
-
-        if step%100 == 0 and step != 0:
+        if step%1000 == 0 and step != 0:
             for i in range(VAL_LOOP):
                 print(VAL_LOOP)
                 start_time = time.time()
-                summary_val,images, labels, preds,val_metrics_value = sess.run([merged_val,image_batch, label_batch, pred,val_metrics],feed_dict={is_training:False})
+                summary_val,images, labels, preds,val_metrics_value,_ = sess.run([merged_val,image_batch, label_batch, pred,val_metrics,val_updata_op],feed_dict={is_training:False})
                 
                 summary_writer.add_summary(summary_val,step)
 
@@ -458,8 +524,8 @@ def main():
                 
                 duration = time.time() - start_time
                 
-                print('step {:<6d}, val:  r0 = {:.5f}, r1 = {:.5f}, p0 = {:.5f}, p1 = {:.5f}, acc = {:.5f}, ({:.5f} sec/step)'.format(step, \
-                            val_metrics_value[0],val_metrics_value[1],val_metrics_value[2],val_metrics_value[3],val_metrics_value[4],duration))
+                print('step {:<6d}, val:  miou = {:.5f}, ({:.5f} sec/step)'.format(step, \
+                            val_metrics_value,duration))
 
 
             save(saver, sess, args.snapshot_dir, step)

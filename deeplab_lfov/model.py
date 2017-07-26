@@ -225,7 +225,7 @@ class DeepLabLFOVModel(object):
         with tf.name_scope('label_encode'):
             input_batch = tf.image.resize_nearest_neighbor(input_batch, new_size) # As labels are integer numbers, need to use NN interp.
             input_batch = tf.squeeze(input_batch, squeeze_dims=[3]) # Reducing the channel dimension.
-            input_batch = tf.one_hot(input_batch, depth=2)
+            input_batch = tf.one_hot(input_batch, depth=n_classes)
         return input_batch
       
     def preds(self, input_batch,variables):
@@ -265,20 +265,13 @@ class DeepLabLFOVModel(object):
         prediction = tf.reshape(preds, [-1])
         gt = tf.reshape(labels, [-1])
 
-        recall1,recall2,precision1,precision2,accuracy = self._calculate_metrics(prediction,gt)
+         # mIoU
+        val_metrics, update_op = tf.metrics.mean_iou(prediction,gt, num_classes=n_classes) 
 
+        tf.summary.scalar('val_miou',val_metrics,collections = ['val'])
 
-        tf.summary.scalar('val_r0',recall1,collections = ['val'])
-        tf.summary.scalar('val_r1',recall2,collections = ['val'])
-        tf.summary.scalar('val_p0',precision1,collections = ['val'])
-        tf.summary.scalar('val_p1',precision2,collections = ['val'])
-        tf.summary.scalar('val_acc',accuracy,collections = ['val'])
+        return  val_metrics, update_op
 
-
-        return  recall1,recall2,precision1,precision2,accuracy
-
-    # def create_network(self,img_batch, label_batch):
-    #     self.variables()
 
 
     def loss(self, img_batch, label_batch, variables, is_Qnet = False, is_placehold = False):
@@ -310,22 +303,21 @@ class DeepLabLFOVModel(object):
 
         pred = tf.nn.softmax(prediction)
 
-        train_metrics = self._calculate_metrics(tf.argmax(pred,axis=1),tf.argmax(gt,axis = 1))
+        # train_metrics = self._calculate_metrics(tf.argmax(pred,axis=1),tf.argmax(gt,axis = 1))
 
 
-
-        w_0 = 1.0
-        w_1 = 1.0 
-
-
-        tf.summary.scalar('w_0',w_0)
-        tf.summary.scalar('w_1',w_1)
-
-        w0_col = tf.multiply(w_0,gt[:,0])
-        w1_col = tf.multiply(w_1,gt[:,1])
+        # mIoU
+        train_metrics, update_op = tf.metrics.mean_iou(tf.argmax(pred,axis=1),tf.argmax(gt,axis = 1), num_classes=n_classes) 
 
 
-        weight_matrix = tf.stack([w0_col,w1_col],axis = 1)
+        weight_matrix_list = []
+        for i in range(n_classes):
+            w_i = 1.0
+            w_i_col = tf.multiply(w_i,gt[:,i])
+            weight_matrix_list.append(w_i_col)
+
+        weight_matrix = tf.stack(weight_matrix_list,axis = 1)
+
 
 
         loss_tmp1 = -tf.multiply(weight_matrix,tf.log(tf.clip_by_value(pred,1e-5,1.0)))
@@ -340,24 +332,17 @@ class DeepLabLFOVModel(object):
         # tf.summary.scalar("loss_target",loss_target)
 
         if is_Qnet:
-            tf.summary.scalar('train_r0',train_metrics[0],collections = ['Q_train'])
-            tf.summary.scalar('train_r1',train_metrics[1],collections = ['Q_train'])
-            tf.summary.scalar('train_p0',train_metrics[2],collections = ['Q_train'])
-            tf.summary.scalar('train_p1',train_metrics[3],collections = ['Q_train'])
-            tf.summary.scalar('train_acc',train_metrics[4],collections = ['Q_train'])
-            tf.summary.scalar("loss",loss_total,collections = ['Q_train'])
+
+            tf.summary.scalar('Qtrain_miou',train_metrics,collections = ['Q_train'])
+            tf.summary.scalar('Qloss',loss_total,collections = ['Q_train'])
             
 
         elif not is_placehold:
-            tf.summary.scalar('train_r0',train_metrics[0],collections = ['train'])
-            tf.summary.scalar('train_r1',train_metrics[1],collections = ['train'])
-            tf.summary.scalar('train_p0',train_metrics[2],collections = ['train'])
-            tf.summary.scalar('train_p1',train_metrics[3],collections = ['train'])
-            tf.summary.scalar('train_acc',train_metrics[4],collections = ['train'])
+            tf.summary.scalar('train_miou',train_metrics,collections = ['train'])
             tf.summary.scalar("loss",loss_total,collections = ['train'])
 
         
-        return loss_total,train_metrics,raw_output,label_batch
+        return loss_total,train_metrics,raw_output,label_batch,update_op
 
         
     
@@ -389,44 +374,19 @@ class DeepLabLFOVModel(object):
         pred = tf.nn.softmax(prediction)
 
 
-        train_metrics = self._calculate_metrics(tf.argmax(pred,axis=1),tf.argmax(gt,axis = 1))
+        # train_metrics = self._calculate_metrics(tf.argmax(pred,axis=1),tf.argmax(gt,axis = 1))
 
+        # mIoU
+        train_metrics, update_op = tf.metrics.mean_iou(tf.argmax(pred,axis=1),tf.argmax(gt,axis = 1), num_classes = n_classes) 
 
+        
+        weight_matrix_list = []
+        for i in range(n_classes):
+          w_i = weight[i]
+          w_i_col = tf.multiply(w_i,gt[:,i])
+          weight_matrix_list.append(w_i_col)
 
-
-        w_0 = 1.0
-        w_1 = weight
-
-
-        # balanced_weihght = tf.get_variable('blanced_weighte',shape=[2],initializer = tf.constant_initializer(0))
-        # balanced_weihght = tf.nn.softmax(balanced_weihght,name = 'softmax_balanced_weihght')
-
-
-        # tf.summary.scalar('balanced_weihght_0',balanced_weihght[0])
-        # tf.summary.scalar('balanced_weihght_1',balanced_weihght[1])
-
-        # count_0 = tf.cast(tf.reduce_sum(gt[:,0]),tf.float32)
-        # count_1 = tf.cast(tf.reduce_sum(gt[:,1]),tf.float32)
-
-        # w_0 = balanced_weihght[0]
-        # w_1 = balanced_weihght[1] * count_0 / count_1
-
-
-        # count_0 = tf.cast(tf.reduce_sum(gt[:,0]),tf.float32)
-        # count_1 = tf.cast(tf.reduce_sum(gt[:,1]),tf.float32)
-
-        # w_0 = 1.0
-        # w_1 = count_0/count_1
-
-        tf.summary.scalar('w_0',w_0)
-        tf.summary.scalar('w_1',w_1)
-
-        w0_col = tf.multiply(w_0,gt[:,0])
-        w1_col = tf.multiply(w_1,gt[:,1])
-
-
-        weight_matrix = tf.stack([w0_col,w1_col],axis = 1)
-
+        weight_matrix = tf.stack(weight_matrix_list,axis = 1)
 
 
         # weight_matrix = tf.Print(weight_matrix,[tf.shape(weight_matrix),weight_matrix],message= 'weight_matrix',summarize = 6)
@@ -437,29 +397,7 @@ class DeepLabLFOVModel(object):
         loss_total = tf.reduce_mean(loss_tmp2)
 
 
-
-
-        # recall,op1 = tf.metrics.recall(tf.argmax(gt,axis=1),tf.argmax(pred,axis=1))
-
-        # accuracy = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(gt,axis=1),tf.argmax(pred,axis=1)),tf.float32))
-        
-        # precision,op2 = tf.metrics.precision(tf.argmax(gt),tf.argmax(prediction))
-
-        # accuracy,op3 = tf.metrics.accuracy(tf.argmax(gt),tf.argmax(prediction))
-
-
-        # metrics = [precision,recall,accuracy]
-
-
-
-        # loss_target = tf.nn.softmax_cross_entropy_with_logits(logits = prediction, labels = gt)
-        # loss_target = tf.reduce_mean(loss_target)
-
-        # tf.summary.scalar("loss_target",loss_target)
-
-
-        
-        return loss_total,train_metrics,raw_output
+        return loss_total,train_metrics,raw_output,update_op
 
 
 
