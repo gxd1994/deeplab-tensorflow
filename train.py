@@ -34,13 +34,15 @@ from sklearn.metrics import precision_score
 
 NUM_CLASS = 2
 
-BATCH_SIZE = 6
+BATCH_SIZE = 8
 
 # DATA_DIRECTORY = './dataset/VOC2012/VOC2012' #'/home/VOCdevkit'
 DATA_DIRECTORY = './dataset/class1_def' #'/home/VOCdevkit'
+# DATA_DIRECTORY = './dataset/class3_def' #'/home/VOCdevkit'
 
 # IMG_MEAN = np.array((104.00698793,116.66876762,122.67891434), dtype=np.float32)
 IMG_MEAN = np.array((70,70,70), dtype=np.float32)
+# IMG_MEAN = np.array((175,175,175), dtype=np.float32)
 
 
 DATA_TRAIN_LIST_PATH = DATA_DIRECTORY+'/train.txt'
@@ -49,7 +51,7 @@ DATA_VAL_LIST_PATH = DATA_DIRECTORY+'/test.txt'
 
 INPUT_SIZE = '505,505'
 LEARNING_RATE = 0.0001
-NUM_STEPS = 60000
+NUM_STEPS = 10000
 RANDOM_SCALE = False  #True
 RESTORE_FROM = None #'./snapshots/model.ckpt-5000' # './snapshots/model.ckpt-pretrained'   #'./deeplab_lfov.ckpt'
 SAVE_DIR = './images/'
@@ -61,6 +63,7 @@ LOG_DIR = './log'
 
 # VAL_LOOP = int(math.ceil(float(1449)/BATCH_SIZE))
 VAL_LOOP = int(math.ceil(float(29)/BATCH_SIZE))
+VAL_PRE = 120
 
 
 
@@ -263,7 +266,12 @@ def main():
     with tf.variable_scope('Q_SegNet'):
         Q_net = DeepLabLFOVModel(args.weights_path)
 
+    with tf.variable_scope('Tmp'):
+        tmp_net = DeepLabLFOVModel(args.weights_path)
 
+
+    updata_net_to_tmp_ops = TensorList_Assign(net.variables,tmp_net.variables)
+    updata_tmp_to_q_net_ops = TensorList_Assign(tmp_net.variables,Q_net.variables)
 
     updata_q_net_to_net_ops = TensorList_Assign(Q_net.variables,net.variables)
     updata_net_to_q_net_ops = TensorList_Assign(net.variables,Q_net.variables)
@@ -375,7 +383,7 @@ def main():
     average_count = 0
     DDPG_count = 0
 
-
+    valild_update_count = 0
     # Iterate over training steps.
     for step in range(args.num_steps):
         start_time = time.time()
@@ -414,12 +422,13 @@ def main():
 
             if is_updata_q_net_to_net:
                 sess.run(updata_q_net_to_net_ops)
+                valild_update_count += 1
 
             # _ ,loss_value,train_metrics_value,featuremap_val,image_batch_fetch,label_batch_fetch= \
             #                         sess.run([optim,loss,train_metrics,featuremap,image_batch,label_batch],\
             #                                 feed_dict={is_training:True})
 
-
+            sess.run(updata_net_to_tmp_ops)
 
             summary_train,loss_value, _ ,train_metrics_value,_,image_batch_fetch,label_batch_fetch= \
                         sess.run([merged_train,loss,optim,train_metrics,train_updata_op,image_batch,label_batch],\
@@ -439,8 +448,9 @@ def main():
 
             # loss_origin,featuremap,image_batch,label_batch
 
-            print('step {:<6d}, loss = {:.5f}, miou = {:.5f}, ({:.5f} sec/step)'.format(step,newest_loss_value,\
-                                       train_metrics_value,duration))
+            print('step {:<6d}, loss = {:.5f}, miou = {:.5f}, update={:5d}  ({:.5f} sec/step)'.format(step,loss_value,\
+                                       train_metrics_value,valild_update_count,duration))
+
 
 
             # #select = 0
@@ -454,6 +464,7 @@ def main():
             featuremap_flatten = np.argmax(featuremap_val,axis =3).flatten()
 
             average_count += 1
+            print('seg:')
             s_0,distribution,distribution_batch = calculate_state(label_flatten,featuremap_flatten,average_count,distribution,distribution_batch,False)
 
 
@@ -462,7 +473,16 @@ def main():
             def seg_get_state(a_t):
 
                 w1 = a_t
+                # a_t = [1,1]
                 print("a",a_t)
+
+                ######update net  --->  q_net
+
+                # is_updata_net_to_q_net = True
+
+                # sess.run(updata_net_to_q_net_ops)
+
+                sess.run(updata_tmp_to_q_net_ops)
 
                 ##backup update Q_net parameters
                 Q_loss_w_val,Q_featuremap_w_val,_ = sess.run([Q_loss_w,Q_featuremap_w,Q_optim],feed_dict={Q_image_batch:image_batch_fetch,Q_label_batch:label_batch_fetch,Q_action:w1})
@@ -473,8 +493,8 @@ def main():
 
                 r_t = newest_loss_value - Q_loss_val
 
-                print("orgin_loss:%.5f    q_loss_w:%.5f     q_loss:%.5f  r_t:%5f "%(loss_value, Q_loss_w_val, Q_loss_val,r_t))
-
+                print("orgin_loss:%.5f    q_loss_w:%.5f     q_loss:%.5f  r_t:%5f "%(newest_loss_value, Q_loss_w_val, Q_loss_val,r_t))
+                
 
                 Q_label_flatten = np.argmax(label_equal_val,axis=3).flatten()
                 Q_featuremap_val_argmax_flatten = np.argmax(Q_featuremap_val,axis=3).flatten()
@@ -485,20 +505,17 @@ def main():
 
                 return s_t1,r_t,terminal
 
+            if step > 12:
+                for i in range(50):
+                    is_updata_q_net_to_net,DDPG_count,var = DDPG.trainNetwork(ddpg,s_0,seg_get_state,DDPG_count,var)
 
-            is_updata_net_to_q_net = True
-
-            sess.run(updata_net_to_q_net_ops)
-
-            is_updata_q_net_to_net,DDPG_count,var = DDPG.trainNetwork(ddpg,s_0,seg_get_state,DDPG_count,var)
-
-            #is_updata_q_net_to_net =False
+            # is_updata_q_net_to_net =False
 
 
 
         duration = time.time() - start_time
 
-        if step%1000 == 0 and step != 0:
+        if step%VAL_PRE == 0 and step != 0:
             for i in range(VAL_LOOP):
                 print(VAL_LOOP)
                 start_time = time.time()
@@ -520,7 +537,11 @@ def main():
                     axes.flat[2].imshow(decode_labels(preds[j, :, :, 0]))
 
                     plt.savefig(args.save_dir + str(start_time) +'_'+str(i*BATCH_SIZE+j)+"test.png")
-                    plt.close(fig)
+                    plt.close(fig) 
+
+                    # save_img = images[j]+
+
+
                 
                 duration = time.time() - start_time
                 

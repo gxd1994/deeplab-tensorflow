@@ -100,20 +100,25 @@ class ImageReader(object):
           
         Returns:
           Two tensors of size (batch_size, h, w, {3,1}) for images and masks.'''
-        if is_training:
+        # if is_training:
 
-            num_preprocess_threads = 16
-            min_queue_examples = 50
-            image_batch, label_batch = tf.train.shuffle_batch(
-                                            [self.image, self.label],
-                                           batch_size=num_elements,
-                                            num_threads=num_preprocess_threads,
-                                           capacity=min_queue_examples + 3 * num_elements,
-                                            min_after_dequeue=min_queue_examples)
-        else:
+        #     num_preprocess_threads = 16
+        #     min_queue_examples = 50
+        #     image_batch, label_batch = tf.train.shuffle_batch(
+        #                                     [self.image, self.label],
+        #                                    batch_size=num_elements,
+        #                                     num_threads=num_preprocess_threads,
+        #                                    capacity=min_queue_examples + 3 * num_elements,
+        #                                     min_after_dequeue=min_queue_examples)
+        # else:
 
-            image_batch, label_batch = tf.train.batch([self.image, self.label],
-                                                    num_threads = 4,
-                                                    batch_size = num_elements,capacity = 100)
+        #     image_batch, label_batch = tf.train.batch([self.image, self.label],
+        #                                             num_threads = 4,
+        #                                             batch_size = num_elements,capacity = 100)
+
+
+        image_batch, label_batch = tf.train.batch([self.image, self.label],
+                                            num_threads = 20,
+                                            batch_size = num_elements,capacity = 100)
 
         return image_batch, label_batch

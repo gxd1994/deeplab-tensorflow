@@ -22,14 +22,14 @@ from collections import deque
 
 #####################  hyper parameters  ####################
 
-MAX_EP_STEPS = 5 #400
+MAX_EP_STEPS = 1 #400
 LR_A = 0.01  # learning rate for actor
 LR_C = 0.01  # learning rate for critic
 GAMMA = 0.9  # reward discount
 REPLACE_ITER_A = 500
 REPLACE_ITER_C = 300
 MEMORY_CAPACITY = 7000 #7000
-OBSERVE = 1000
+OBSERVE = 100
 
 BATCH_SIZE = 32 #32
 
@@ -176,11 +176,21 @@ def trainNetwork(ddpg,s_0,seg_get_state,step,var):
 
     ep_reward = 0
 
-    
+    a_old = None
     step += 1
     for j in range(MAX_EP_STEPS):
         state = 'Explore'
-        # Add exploration noise
+
+        # if j==0:
+        #     # Add exploration noise
+        #     a = ddpg.choose_action(s)
+
+        #     a = np.clip(np.random.normal(a, max(0,var)), 0, 10)    # add randomness to action selection for exploration
+
+        #     a_old = a
+        # else:
+        #     a = a_old
+
         a = ddpg.choose_action(s)
 
         a = np.clip(np.random.normal(a, max(0,var)), 0, 10)    # add randomness to action selection for exploration
@@ -188,8 +198,8 @@ def trainNetwork(ddpg,s_0,seg_get_state,step,var):
         s_, r, done = seg_get_state(a)
 
         #print("s,r,a,s_",s.shape,r.shape,a.shape,s_.shape)
-
-        ddpg.store_transition(s, a, r * 100, s_)
+        r_final = r * 100
+        ddpg.store_transition(s, a, r_final , s_)
 
 
         if var > FINAL_VAR and len(ddpg.memory) >= OBSERVE:
@@ -203,7 +213,9 @@ def trainNetwork(ddpg,s_0,seg_get_state,step,var):
         ep_reward += r
 
         if j == MAX_EP_STEPS-1:
-            print('Episode:%5d'%step,'Episode_steps:%5d'%(step*MAX_EP_STEPS), ' Reward: %5f' % ep_reward, 'var: %.5f' % var,'state:%s'%state,)
+            print('Episode:%5d'%step,'Episode_steps:%5d'%(step*MAX_EP_STEPS), ' Reward: %5f' % ep_reward, 'var: %.5f' % var,'state:%s'%state,'r_final:%.5f'%r_final)
+            if r > 0:
+                is_updata_q_net_to_net = True
 
         cur_step = (step-1)*MAX_EP_STEPS+j
         if cur_step % SAVE_PRE == 0 and cur_step != 0: 
@@ -214,8 +226,8 @@ def trainNetwork(ddpg,s_0,seg_get_state,step,var):
 
 
 
-    if ep_reward > 0:
-        is_updata_q_net_to_net = True
+    # if ep_reward > 0:
+    #     is_updata_q_net_to_net = True
 
 
     return  is_updata_q_net_to_net,step,var
